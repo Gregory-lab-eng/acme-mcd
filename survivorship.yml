@@ -1,0 +1,14 @@
+survivorship:
+  email:
+    rule: "most_recent"
+    source_priority: ["crm", "web", "support"]
+  phone:
+    rule: "longest_string"
+  first_name:
+    rule: "prefer_source"
+    source_priority: ["crm", "support"]
+  last_name:
+    rule: "prefer_source"
+    source_priority: ["crm", "support"]
+  updated_at:
+    rule: "most_recent"

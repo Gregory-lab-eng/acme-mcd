@@ -30,7 +30,7 @@ def bronze_crm_contacts():
     "quality": "bronze",
   }
 )
-def bronze_crm_contacts():
+def bronze_marketing_contacts():
     return (
         spark.readStream
         .format("cloudFiles")
@@ -51,7 +51,7 @@ def bronze_crm_contacts():
     "quality": "bronze",
   }
 )
-def bronze_crm_contacts():
+def bronze_billing():
     return (
         spark.readStream
         .format("cloudFiles")
@@ -60,5 +60,26 @@ def bronze_crm_contacts():
         .option("cloudFiles.inferColumnTypes", "true")
         .option("cloudFiles.schemaEvolutionMode", "rescue")  
         .load("abfss://landing@acmemcd.dfs.core.windows.net/billing")
+        .withColumn("ingestion_date", current_date())
+    )
+
+
+@dp.table(
+  name="support",
+  partition_cols=["ingestion_date"],
+  comment="Raw support ingested from json",
+  table_properties={
+    "quality": "bronze",
+  }
+)
+def bronze_support():
+    return (
+        spark.readStream
+        .format("cloudFiles")
+        .option("cloudFiles.format", "json")
+        .option("cloudFiles.schemaLocation", "abfss://landing@acmemcd.dfs.core.windows.net/_schemas/support")
+        .option("cloudFiles.inferColumnTypes", "true")
+        .option("cloudFiles.schemaEvolutionMode", "rescue")  
+        .load("abfss://landing@acmemcd.dfs.core.windows.net/support")
         .withColumn("ingestion_date", current_date())
     )

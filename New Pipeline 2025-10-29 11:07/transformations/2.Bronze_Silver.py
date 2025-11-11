@@ -6,6 +6,7 @@ bronze_schema = "`acme-dev`.bronze"
 silver_schema = "`acme-dev`.silver"
 files_storage = "abfss://landing@acmemcd.dfs.core.windows.net/"
 
+
 @dp.table(
   name=f"{silver_schema}.std_crm_contacts",
   partition_cols=["updated_at"],
@@ -82,12 +83,13 @@ invalid_condition_marketing = (
 )
 
 @dp.table(name=f"{silver_schema}.std_valid_marketing")
-def std_valid_crm_contacts():
+def std_valid_marketing():
     return dp.readStream(f"{silver_schema}.std_marketing").filter(~invalid_condition_marketing)
 
 @dp.table(name=f"{silver_schema}.quarantine_marketing")
-def invalid_crm_contacts():
+def quarantine_marketing():
     return dp.readStream(f"{silver_schema}.std_marketing").filter(invalid_condition_marketing)
+
 
 @dp.table(
   name=f"{silver_schema}.std_billing",
@@ -130,11 +132,143 @@ invalid_condition_billing = (
 )
 
 @dp.table(name=f"{silver_schema}.std_valid_billing")
-def std_valid_crm_contacts():
+def std_valid_billing():
     return dp.readStream(f"{silver_schema}.std_billing").filter(~invalid_condition_billing)
 
 @dp.table(name=f"{silver_schema}.quarantine_billing")
-def invalid_crm_contacts():
+def invalid_billing():
     return dp.readStream(f"{silver_schema}.std_billing").filter(invalid_condition_billing)
   
 
+@dp.table(
+  name=f"{silver_schema}.std_support",
+  partition_cols=["ingestion_date"],
+  comment="Transformed support",
+  table_properties={
+    "quality": "silver",
+  }
+)
+def std_support():
+    return (
+        dp.readStream(f"{bronze_schema}.support")
+        .select(
+        col("account_id").cast("int").alias("account_id"),
+        col("csat").cast("string").alias("csat"),
+        col("merge_ref").cast("string").alias("merge_ref"),
+        col("priority").cast("string").alias("priority"),
+        col("requester_email").cast("string").alias("requester_email"),
+        col("text").cast("string").alias("ticket_text"),
+        col("ticket_id").cast("string").alias("ticket_id"),
+        col("created_at").cast("timestamp").alias("created_at"),
+        col("dt").cast("date").alias("dt"),
+        current_timestamp().cast("timestamp").alias("ingestion_date")
+        )
+    )
+
+invalid_condition_support = (
+    col("account_id").isNull() |
+    col("requester_email").isNull() |
+    col("ticket_text").isNull() |
+    col("ticket_id").isNull() 
+)
+
+@dp.table(name=f"{silver_schema}.std_valid_support")
+def std_valid_support():
+    return dp.readStream(f"{silver_schema}.std_support").filter(~invalid_condition_support)
+
+@dp.table(name=f"{silver_schema}.quarantine_support")
+def invalid_support():
+    return dp.readStream(f"{silver_schema}.std_support").filter(invalid_condition_support)
+
+
+@dp.table(
+  name=f"{silver_schema}.customers_linkage_full",
+  comment="Linkage table with ALL columns from CRM, Billing, Marketing, Support",
+  table_properties={"quality": "silver"}
+)
+def customers_linkage_full():
+    crm = dp.read(f"{silver_schema}.std_valid_crm_contacts")
+    billing = dp.read(f"{silver_schema}.std_valid_billing")
+    support = dp.read(f"{silver_schema}.std_valid_support")
+    marketing = dp.read(f"{silver_schema}.std_valid_marketing")
+
+    # Join CRM, Billing, Support on account_id
+    base = (
+        crm.alias("c")
+        .join(billing.alias("b"), col("c.account_id") == col("b.account_id"), "outer")
+        .join(support.alias("s"), col("c.account_id") == col("s.account_id"), "outer")
+    )
+
+    # Join Marketing on email (since no account_id)
+    joined = base.join(
+        marketing.alias("m"),
+        coalesce(col("c.email"), col("b.email"), col("s.requester_email")) == col("m.email"),
+        "outer"
+    )
+
+    return (
+        joined.select(
+            # CRM columns
+            col("c.account_id").alias("crm_account_id"),
+            col("c.contact_id").alias("crm_contact_id"),
+            col("c.email").alias("crm_email"),
+            col("c.phone").alias("crm_phone"),
+            col("c.first_name").alias("crm_first_name"),
+            col("c.last_name").alias("crm_last_name"),
+            col("c.address").alias("crm_address"),
+            col("c.city").alias("crm_city"),
+            col("c.postal_code").alias("crm_postal_code"),
+            col("c.country_code").alias("crm_country_code"),
+            col("c.updated_at").alias("crm_updated_at"),
+            col("c.ingestion_date").alias("crm_ingestion_date"),
+
+            # Billing columns
+            col("b.account_id").alias("billing_account_id"),
+            col("b.customer_key").alias("billing_customer_key"),
+            col("b.email").alias("billing_email"),
+            col("b.phone").alias("billing_phone"),
+            col("b.first_name").alias("billing_first_name"),
+            col("b.last_name").alias("billing_last_name"),
+            col("b.address").alias("billing_address"),
+            col("b.city").alias("billing_city"),
+            col("b.postal_code").alias("billing_postal_code"),
+            col("b.country_code").alias("billing_country_code"),
+            col("b.invoice_id").alias("billing_invoice_id"),
+            col("b.amount").alias("billing_amount"),
+            col("b.currency").alias("billing_currency"),
+            col("b.status").alias("billing_status"),
+            col("b.invoice_date").alias("billing_invoice_date"),
+            col("b.ingestion_date").alias("billing_ingestion_date"),
+
+            # Support columns
+            col("s.account_id").alias("support_account_id"),
+            col("s.ticket_id").alias("support_ticket_id"),
+            col("s.requester_email").alias("support_email"),
+            col("s.priority").alias("support_priority"),
+            col("s.csat").alias("support_csat"),
+            col("s.ticket_text").alias("support_ticket_text"),
+            col("s.created_at").alias("support_created_at"),
+            col("s.ingestion_date").alias("support_ingestion_date"),
+
+            # Marketing columns
+            col("m.lead_id").alias("marketing_lead_id"),
+            col("m.email").alias("marketing_email"),
+            col("m.first_name").alias("marketing_first_name"),
+            col("m.last_name").alias("marketing_last_name"),
+            col("m.country_code").alias("marketing_country_code"),
+            col("m.region").alias("marketing_region"),
+            col("m.utm_campaign").alias("marketing_campaign"),
+            col("m.created_at").alias("marketing_created_at"),
+            col("m.ingestion_date").alias("marketing_ingestion_date"),
+
+            # Generate a unified surrogate key
+            coalesce(
+                col("c.account_id").cast("string"),
+                col("b.account_id").cast("string"),
+                col("s.account_id").cast("string"),
+                col("m.email")
+            ).alias("customer_unique_id"),
+
+            current_timestamp().alias("linkage_ingestion_date")
+        )
+    )
